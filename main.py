@@ -39,12 +39,10 @@ def estimate_pitch_simple(audio, sampling_rate):
 def add_colorbar_outside(im, ax, distance=0.01):
     fig = ax.get_figure()
     bbox = ax.get_position()
-    # bbox [x0 (left), y0 (bottom), x1 (right), y1 (top)]
     width = 0.01
     eps = distance  # margin between plot and colorbar
 
-    cax = fig.add_axes(
-        [bbox.x1 + eps, bbox.y0, width, bbox.height])
+    cax = fig.add_axes([bbox.x1 + eps, bbox.y0, width, bbox.height])
     cbar = fig.colorbar(im, cax=cax)
     cbar.set_label('Intensity dB')
     return fig
@@ -55,7 +53,7 @@ def plot_audio_static(wav, fig_title, timestamped_transcription=False, pitch=Tru
     audio, sampling_rate = librosa.load(wav)
 
     # figure settings
-    plt.rcParams.update({'font.size': 30,
+    plt.rcParams.update({'font.size': 25,
                          'figure.figsize': (30, 20)})
     fig, (ax, ax2) = plt.subplots(nrows=2, sharex='all')
     title = fig.suptitle('\n'.join(wrap(fig_title, 90)))
@@ -104,7 +102,7 @@ def plot_audio_static(wav, fig_title, timestamped_transcription=False, pitch=Tru
                              labelright=True)
 
     # needs space for F0 axis if present
-    fig = add_colorbar_outside(im, ax2, distance=0.04 if pitch else 0)
+    fig = add_colorbar_outside(im, ax2, distance=0.04 if pitch else 0.01)
 
     if timestamped_transcription:
         # assume JSON?
@@ -133,6 +131,9 @@ def plot_audio_static(wav, fig_title, timestamped_transcription=False, pitch=Tru
                      verticalalignment='center')
 
     fig.align_ylabels([ax, ax2])
+    # removing excessive whitespace on the left
+    # which makes the figure look off-center
+    plt.subplots_adjust(left=0.05)
     return fig
 
 
