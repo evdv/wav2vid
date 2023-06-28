@@ -11,6 +11,7 @@ import numpy as np
 import pygifsicle as pygifsicle
 from librosa import samples_to_time, frames_to_time
 from moviepy import editor
+from moviepy.video.io.bindings import mplfig_to_npimage
 
 PITCH_HOP = 512
 PITCH_FRAMELEN = 1024
@@ -137,36 +138,21 @@ def plot_audio_static(wav, fig_title, timestamped_transcription=False, pitch=Tru
 
 def create_gif_with_progress_line(wav, text, video_path):
     duration = get_duration(wav)
-    frames = []
-    frame_durations = []
-    timestamp = 0
-    while timestamp <= duration+FRAME_TIMESTEP:
+
+    def single_frame(t):
         figure = plot_audio_static(wav, text)
         for fig_ax in figure.axes:
             if fig_ax.get_ylabel().lower().startswith('intensity'):
                 continue
-            fig_ax.axvline(x=min(timestamp, duration), linewidth=4, color='maroon')
+            fig_ax.axvline(x=t, linewidth=4, color='maroon')
 
-        plt.savefig(f'here{timestamp}.png')
-        frames.append(imageio.imread_v2(f'here{timestamp}.png'))
-        # if timestamp is closer to end duration than 0.1, stick with that
-        # then turn into hundreds of a second
-        frame_durations.append(min(FRAME_TIMESTEP, duration-timestamp))
+        return mplfig_to_npimage(figure)
 
-        # clean up and ready for next iteration
-        os.remove(f'here{timestamp}.png')
-        plt.close()
-        timestamp += FRAME_TIMESTEP
-
-    imageio.mimsave(uri='images.gif', ims=frames, duration=frame_durations)
-    pygifsicle.optimize('images.gif')
-
-    video = editor.VideoFileClip('images.gif')
+    video = editor.VideoClip(single_frame, duration=duration)
     audio = editor.AudioFileClip(wav)
     final_video = video.set_audio(audio)
 
     final_video.write_videofile(fps=1/FRAME_TIMESTEP, codec='libx264', filename=video_path)
-    os.remove('images.gif')
 
 
 if __name__ == '__main__':
