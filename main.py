@@ -1,21 +1,23 @@
 import argparse
 import json
-import os
 from functools import lru_cache
+from math import log
 from textwrap import wrap
 
-import imageio
 import librosa as librosa
 import matplotlib.pyplot as plt
 import numpy as np
-import pygifsicle as pygifsicle
 from librosa import samples_to_time, frames_to_time
+from librosa.feature.spectral import rms
 from moviepy import editor
 from moviepy.video.io.bindings import mplfig_to_npimage
 
-PITCH_HOP = 512
-PITCH_FRAMELEN = 1024
-FRAME_TIMESTEP = 0.1  # seconds
+_PITCH_HOP = 512
+_PITCH_FRAMELEN = 1024
+_FRAME_TIMESTEP = 0.1  # seconds
+
+# things to save as global variables where caching isn't allowed
+PITCH = np.empty((0, 0))
 
 @lru_cache()
 def get_duration(wav):
@@ -24,15 +26,19 @@ def get_duration(wav):
     return timelabels[-1]
 
 
+# @lru_cache()  # can't cache due to audio datatype
 def estimate_pitch_simple(audio, sampling_rate):
-    pitch, voiced_flag, voiced_probs = librosa.pyin(
-        audio,
-        fmin=librosa.note_to_hz('C2'),
-        fmax=librosa.note_to_hz('C7'),
-        hop_length=PITCH_HOP,
-        frame_length=PITCH_FRAMELEN,
-        sr=sampling_rate)
-    return pitch
+    global PITCH
+    if not PITCH.size > 0:
+        pitch, voiced_flag, voiced_probs = librosa.pyin(
+            audio,
+            fmin=librosa.note_to_hz('C2'),
+            fmax=librosa.note_to_hz('C7'),
+            hop_length=_PITCH_HOP,
+            frame_length=_PITCH_FRAMELEN,
+            sr=sampling_rate)
+        PITCH = pitch
+    return PITCH
 
 
 # function to add colorbar for imshow data and axis
@@ -48,9 +54,85 @@ def add_colorbar_outside(im, ax, distance=0.01):
     return fig
 
 
-def plot_audio_static(wav, fig_title, timestamped_transcription=False, pitch=True):
-    # load audio
+def plot_pitch(pitch_vals, pitch_ax, sr, until=True):
+    time_labels = frames_to_time(np.arange(len(pitch_vals)),
+                                 sr=sr,
+                                 n_fft=_PITCH_FRAMELEN,
+                                 hop_length=_PITCH_HOP)
+
+    # until defaults to true so all timestamps are included
+    excl_index = len(list(filter(lambda x: x <= until, time_labels)))
+    pitch_ax.plot(time_labels[:excl_index], pitch_vals[:excl_index],
+                  color="lime", linewidth=5)
+
+    # axis settings
+    # maximum pitch, excluding NaN
+    pitch_ax.set_ylim(0, max(np.where(np.isnan(pitch_vals), 0.0, pitch_vals)) + 100)
+    pitch_ax.set_ylabel("F0 (Hz)", color="lime")
+    pitch_ax.yaxis.set_label_position("right")
+    pitch_ax.tick_params(labelsize="x-small",
+                         colors="lime",
+                         bottom=False,
+                         labelbottom=False,
+                         left=False,
+                         labelleft=False,
+                         right=True,
+                         labelright=True)
+
+
+@lru_cache()
+def prep_audio(wav):
     audio, sampling_rate = librosa.load(wav)
+    time_labels = samples_to_time(np.arange(len(audio)),
+                                  sr=sampling_rate)
+    return audio, sampling_rate, time_labels
+
+
+def estimate_rms_energy(audio):
+    S, phase = librosa.magphase(librosa.stft(audio,
+                                             n_fft=_PITCH_FRAMELEN,
+                                             hop_length=_PITCH_HOP,
+                                             # win_length=None,
+                                             ))
+
+    return rms(S=S, frame_length=_PITCH_FRAMELEN, hop_length=_PITCH_HOP)[0]
+
+
+def plot_energy(energy_vals, energy_ax, sr, until=True):
+    time_labels = frames_to_time(np.arange(len(energy_vals)),
+                                 sr=sr,
+                                 n_fft=_PITCH_FRAMELEN,
+                                 hop_length=_PITCH_HOP)
+
+    excl_index = len(list(filter(lambda x: x <= until, time_labels)))
+
+    energy_ax.semilogy(time_labels[:excl_index], energy_vals[:excl_index],
+                       color='purple',
+                       linewidth=5,
+                       label='RMS Energy')
+
+    # axis settings
+    # maximum pitch, excluding NaN
+    energy_ax.set_ylabel('RMS Energy', color='purple')
+    energy_ax.yaxis.set_label_coords(0.03, 0.5)
+    energy_ax.tick_params(labelsize='x-small',
+                          colors='purple',
+                          direction='in',
+                          pad=-45,
+                          bottom=False,
+                          labelbottom=False,
+                          left=True,
+                          labelleft=True,
+                          right=False,
+                          labelright=False)
+
+
+def plot_audio_static(wav, fig_title, top='wave', timestamped_transcription=False, pitch=True, energy=True, until=True):
+    # load audio
+    audio, sampling_rate, time_labels = prep_audio(wav)
+    # in case a fig is still open from a previous call to the function
+    # adding a cache caused a bug with the vline
+    plt.close()
 
     # figure settings
     plt.rcParams.update({'font.size': 25,
@@ -60,11 +142,17 @@ def plot_audio_static(wav, fig_title, timestamped_transcription=False, pitch=Tru
     title.set_y(0.93)
 
     # top plot
-    time_labels = samples_to_time(np.arange(len(audio)),
-                                  sr=sampling_rate)
     # simple waveform
-    ax.plot(time_labels, audio)
-    ax.set_ylabel('Amplitude')
+    if top == 'wave':
+        excl_index = len(list(filter(lambda x: x <= until, time_labels)))
+        ax.plot(time_labels[:excl_index], audio[:excl_index])
+        ax.set_ylim(0 - (max(audio) + 0.01), max(audio) + 0.01)
+        ax.set_ylabel('Amplitude')
+    elif top == 'pitch':
+        # TODO find sleeker way to choose which feature gets displayed where
+        pass
+    elif top == 'energy':
+        pass
 
     # bottom plot
     # spectrogram
@@ -77,91 +165,13 @@ def plot_audio_static(wav, fig_title, timestamped_transcription=False, pitch=Tru
     ax2.set_xlabel('Time (s)')
 
     if pitch:
-        # overlay bottom plot
         pitch_vals = estimate_pitch_simple(audio, sampling_rate)
-
+        # overlay bottom plot
         pitch_ax = ax2.twinx()
-        time_labels = frames_to_time(np.arange(len(pitch_vals)),
-                                     sr=sampling_rate,
-                                     n_fft=PITCH_FRAMELEN,
-                                     hop_length=PITCH_HOP)
-        pitch_ax.plot(time_labels, pitch_vals, color="lime", linewidth=5)
+        plot_pitch(pitch_vals, pitch_ax, sampling_rate, until=until)
 
-        # axis settings
-        # maximum pitch, excluding NaN
-        pitch_ax.set_ylim(0, max(np.where(np.isnan(pitch_vals), 0.0, pitch_vals)) + 100)
-        pitch_ax.set_ylabel("F0 (Hz)", color="lime")
-        pitch_ax.yaxis.set_label_position("right")
-        pitch_ax.tick_params(labelsize="x-small",
-                             colors="lime",
-                             bottom=False,
-                             labelbottom=False,
-                             left=False,
-                             labelleft=False,
-                             right=True,
-                             labelright=True)
-
-    # needs space for F0 axis if present
-    fig = add_colorbar_outside(im, ax2, distance=0.04 if pitch else 0.01)
-
-    if timestamped_transcription:
-        # assume JSON?
-        with open(timestamped_transcription) as f:
-            transcript_dict = json.load(f)
-            transcript_dict_floats = {float(key): value
-                                      for key, value in transcript_dict.items()}
-
-            ordered_transcript = sorted(transcript_dict_floats)
-        # add lines to mark transcription boundaries on both plots
-        for timestamp, _ in ordered_transcript:
-            ax.axvline(x=timestamp, linewidth=5)
-            ax2.axvline(x=timestamp, linewidth=5)
-
-        # add transcription symbol per symbol
-        for index, timestamp_start, text in enumerate(ordered_transcript):
-            text = text.strip('}').strip('{')
-
-            # calculate middle timestamp for transcription alignment
-            timestamp_end = ordered_transcript[index + 1][0]
-            timestamp_difference = (timestamp_end - timestamp_start)
-            timestamp_middle = timestamp_start + (timestamp_difference / 2)
-
-            ax2.text(timestamp_middle, 5500, text, fontsize=36,
-                     horizontalalignment='center',
-                     verticalalignment='center')
-
-    fig.align_ylabels([ax, ax2])
-    # removing excessive whitespace on the left
-    # which makes the figure look off-center
-    plt.subplots_adjust(left=0.05)
-    return fig
-
-
-def create_gif_with_progress_line(wav, text, video_path):
-    duration = get_duration(wav)
-
-    def single_frame(t):
-        figure = plot_audio_static(wav, text)
-        for fig_ax in figure.axes:
-            if fig_ax.get_ylabel().lower().startswith('intensity'):
-                continue
-            fig_ax.axvline(x=t, linewidth=4, color='maroon')
-
-        return mplfig_to_npimage(figure)
-
-    video = editor.VideoClip(single_frame, duration=duration)
-    audio = editor.AudioFileClip(wav)
-    final_video = video.set_audio(audio)
-
-    final_video.write_videofile(fps=1/FRAME_TIMESTEP, codec='libx264', filename=video_path)
-
-
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--wav')
-    parser.add_argument('--text')
-    parser.add_argument('--output-video')
-
-    args = parser.parse_args()
-
-    create_gif_with_progress_line(args.wav, args.text, args.output_video)
+    if energy:
+        energy_vals = estimate_rms_energy(audio)
+        # overlay bottom plot
+        energy_ax = ax2.twinx()
+        plot_energy(energy_vals, energy_ax, sampling_rate, until=until)
