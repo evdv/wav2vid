@@ -8,7 +8,9 @@ import imageio
 import librosa as librosa
 import matplotlib.pyplot as plt
 import numpy as np
+# pip install pygifsicle
 import pygifsicle as pygifsicle
+import textgrid
 from librosa import samples_to_time, frames_to_time
 from moviepy import editor
 from moviepy.video.io.bindings import mplfig_to_npimage
@@ -16,6 +18,29 @@ from moviepy.video.io.bindings import mplfig_to_npimage
 PITCH_HOP = 512
 PITCH_FRAMELEN = 1024
 FRAME_TIMESTEP = 0.1  # seconds
+
+
+def load_textgrid(textgrid_file, tier, as_frames=True):
+    tg = textgrid.TextGrid.fromFile(textgrid_file)
+    tier = get_tier(tg, tier)
+    if as_frames:
+        return [(item.mark,
+                 librosa.time_to_frames(float(item.minTime), sr=22050, hop_length=256, n_fft=None),
+                 librosa.time_to_frames(float(item.maxTime), sr=22050, hop_length=256, n_fft=None))
+                for item in tier]
+    else:
+        return [(item.mark,
+                 float(item.minTime),
+                 float(item.maxTime))
+                for item in tier]
+
+
+def get_tier(textgrid, tier_name):
+    for tier in textgrid.tiers:
+        if tier.name == tier_name:
+            return tier
+    # else None is returned
+
 
 @lru_cache()
 def get_duration(wav):
@@ -105,26 +130,17 @@ def plot_audio_static(wav, fig_title, timestamped_transcription=False, pitch=Tru
     fig = add_colorbar_outside(im, ax2, distance=0.04 if pitch else 0.01)
 
     if timestamped_transcription:
-        # assume JSON?
-        with open(timestamped_transcription) as f:
-            transcript_dict = json.load(f)
-            transcript_dict_floats = {float(key): value
-                                      for key, value in transcript_dict.items()}
-
-            ordered_transcript = sorted(transcript_dict_floats)
+        phone_list = load_textgrid(timestamped_transcription, tier='phones', as_frames=False)
         # add lines to mark transcription boundaries on both plots
-        for timestamp, _ in ordered_transcript:
-            ax.axvline(x=timestamp, linewidth=5)
-            ax2.axvline(x=timestamp, linewidth=5)
+        for phone, min_time, max_time in phone_list[:-1]:
+            ax.axvline(x=max_time, linewidth=5)
+            ax2.axvline(x=max_time, linewidth=5)
 
         # add transcription symbol per symbol
-        for index, timestamp_start, text in enumerate(ordered_transcript):
-            text = text.strip('}').strip('{')
-
-            # calculate middle timestamp for transcription alignment
-            timestamp_end = ordered_transcript[index + 1][0]
-            timestamp_difference = (timestamp_end - timestamp_start)
-            timestamp_middle = timestamp_start + (timestamp_difference / 2)
+        for index, (phone, min_time, max_time) in enumerate(phone_list):
+            text = phone.strip('}').strip('{').strip('012')
+            timestamp_difference = (max_time - min_time)
+            timestamp_middle = min_time + (timestamp_difference / 2)
 
             ax2.text(timestamp_middle, 5500, text, fontsize=36,
                      horizontalalignment='center',
@@ -137,11 +153,11 @@ def plot_audio_static(wav, fig_title, timestamped_transcription=False, pitch=Tru
     return fig
 
 
-def create_gif_with_progress_line(wav, text, video_path):
+def create_gif_with_progress_line(wav, text, video_path, textgrid=None):
     duration = get_duration(wav)
 
     def single_frame(t):
-        figure = plot_audio_static(wav, text)
+        figure = plot_audio_static(wav, text, timestamped_transcription=textgrid)
         for fig_ax in figure.axes:
             if fig_ax.get_ylabel().lower().startswith('intensity'):
                 continue
@@ -160,8 +176,9 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--wav')
     parser.add_argument('--text')
+    parser.add_argument('--textgrid', required=False)
     parser.add_argument('--output-video')
 
     args = parser.parse_args()
 
-    create_gif_with_progress_line(args.wav, args.text, args.output_video)
+    create_gif_with_progress_line(args.wav, args.text, args.output_video, args.textgrid)
